@@ -37,6 +37,8 @@ import {
   docsRoot,
 } from "../services/download";
 
+import { maybeShowInterstitial } from "../services/interstitial";
+
 type Props = NativeStackScreenProps<RootStackParamList, "Library">;
 
 export default function LibraryScreen({ navigation }: Props) {
@@ -241,7 +243,10 @@ export default function LibraryScreen({ navigation }: Props) {
               <View style={{ flexDirection: "row", gap: 12, marginTop: 10 }}>
                 {isDownloaded && (
                   <TouchableOpacity
-                    onPress={() => open(item.slug)}
+                    onPress={() => {
+                      maybeShowInterstitial(); // do not await; do not block
+                      open(item.slug);
+                    }}
                     style={{ padding: 10, backgroundColor: "#d1fae5", borderRadius: 8 }}
                   >
                     <Text>Open</Text>
@@ -250,7 +255,10 @@ export default function LibraryScreen({ navigation }: Props) {
 
                 <TouchableOpacity
                   disabled={!!busySlug}
-                  onPress={() => download(item)}
+                  onPress={() => {
+                    maybeShowInterstitial(); // do not await; do not block
+                    download(item);
+                  }}
                   style={{
                     padding: 10,
                     backgroundColor: isBusy ? "#ddd" : "#fff7ed",
