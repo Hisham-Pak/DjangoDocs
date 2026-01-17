@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build docs zips + manifest.json
+      - name: Build docs zips + manifest.json (clean slugs)
         env:
           OUT_DIR: out
         run: |
@@ -33,51 +33,55 @@ jobs:
 
           REPO_URL="https://github.com/django/django.git"
 
-          echo "Discovering tags..."
+          echo "Discovering tags..." >&2
           TAGS=$(git ls-remote --tags "$REPO_URL" \
             | awk '{print $2}' \
             | sed 's#refs/tags/##' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V)
 
-          # Unique series X.Y
-          SERIES=$(echo "$TAGS" | awk -F. '{print $1"."$2}' | sort -Vu)
+          # Unique series X.Y, filter >= 4.2
+          SERIES=$(echo "$TAGS" | awk -F. '{print $1"."$2}' | sort -Vu | awk -F. '($1>4)||($1==4&&$2>=2){print $0}')
 
-          # Filter >= 4.2
-          SERIES=$(echo "$SERIES" | awk -F. '($1>4)||($1==4&&$2>=2){print $0}')
-
-          echo "Series to build (>=4.2):"
-          echo "$SERIES"
-
-          build_from_ref () {
-            local SLUG="$1"  # "5.2" or "dev"
-            local REF="$2"   # tag like "5.2.3" or branch "main"
-
-            echo "=== Building $SLUG from $REF ==="
-            rm -rf django
-            git clone --depth 1 --branch "$REF" "$REPO_URL" django
-
-            python -m pip install -U pip wheel setuptools
-            python -m pip install -r django/docs/requirements.txt
-
-            (cd django/docs && make html)
-
-            ZIP_NAME="django-docs-${SLUG}-en.zip"
-            (cd django/docs/_build/html && zip -qr "../../../../${OUT_DIR}/${ZIP_NAME}" .)
-
-            local SHA
-            SHA=$(cd django && git rev-parse HEAD)
-            echo "$SLUG $REF $SHA"
-          }
+          echo "Series to build (>=4.2):" >&2
+          echo "$SERIES" >&2
 
           META="$OUT_DIR/meta.txt"
           : > "$META"
 
+          build_from_ref () {
+            local SLUG="$1"  # "5.2" or "dev"
+            local REF="$2"   # tag like "5.2.10" or branch "main"
+
+            echo "=== Building $SLUG from $REF ===" >&2
+            rm -rf django
+
+            # Clone quietly to reduce noise
+            git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" django
+
+            # Install deps (quiet-ish)
+            python -m pip install -q -U pip wheel setuptools
+            python -m pip install -q -r django/docs/requirements.txt
+
+            # Build HTML; send noisy output to stderr so META stays clean
+            (cd django/docs && make html) >&2
+
+            ZIP_NAME="django-docs-${SLUG}-en.zip"
+            (cd django/docs/_build/html && zip -qr "../../../../${OUT_DIR}/${ZIP_NAME}" .) >&2
+
+            local SHA
+            SHA=$(cd django && git rev-parse HEAD)
+
+            # IMPORTANT: This is the ONLY stdout line from this function
+            printf "%s %s %s\n" "$SLUG" "$REF" "$SHA"
+          }
+
           # Build stable series (X.Y) using latest patch tag (X.Y.Z)
           while read -r S; do
+            [ -z "$S" ] && continue
             LATEST=$(echo "$TAGS" | grep -E "^${S}\.[0-9]+$" | tail -n 1)
             if [ -z "$LATEST" ]; then
-              echo "No tag found for series $S"
+              echo "No tag found for series $S" >&2
               exit 1
             fi
             build_from_ref "$S" "$LATEST" >> "$META"
@@ -86,15 +90,15 @@ jobs:
           # Build dev from latest main
           build_from_ref "dev" "main" >> "$META"
 
-          echo "Build meta:"
-          cat "$META"
+          echo "Clean meta lines:" >&2
+          cat "$META" >&2
 
-          # Create manifest.json
+          # ---------- Generate manifest.json ----------
           OWNER="${GITHUB_REPOSITORY_OWNER}"
           REPO="${GITHUB_REPOSITORY#*/}"
           TAG="offline-docs"
-
           GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
           jq -n \
             --arg generatedAt "$GENERATED_AT" \
             --arg releaseTag "$TAG" \
@@ -104,12 +108,17 @@ jobs:
               versions: []
             }' > "$OUT_DIR/manifest.json"
 
+          # Filter ONLY valid slugs: dev or X.Y
+          # Also de-duplicate by slug (keep first occurrence)
+          awk '
+            $1=="dev" || $1 ~ /^[0-9]+\.[0-9]+$/ {print $0}
+          ' "$META" | awk '!seen[$1]++' > "$OUT_DIR/meta.clean.txt"
+
           # Sort: dev first, then numeric desc
-          # meta lines: SLUG REF SHA
           awk '
             $1=="dev" {print "9999.9999 " $0; next}
             {split($1,a,"."); printf("%04d.%04d %s\n", a[1], a[2], $0)}
-          ' "$META" | sort -r | while read -r KEY SLUG REF SHA; do
+          ' "$OUT_DIR/meta.clean.txt" | sort -r | while read -r KEY SLUG REF SHA; do
             ASSET="django-docs-${SLUG}-en.zip"
             URL="https://github.com/${OWNER}/${REPO}/releases/download/${TAG}/${ASSET}"
 
@@ -129,8 +138,8 @@ jobs:
           jq --arg manifestUrl "$MANIFEST_URL" '.manifestUrl=$manifestUrl' \
             "$OUT_DIR/manifest.json" > "$OUT_DIR/manifest.tmp.json" && mv "$OUT_DIR/manifest.tmp.json" "$OUT_DIR/manifest.json"
 
-          echo "Manifest:"
-          cat "$OUT_DIR/manifest.json"
+          echo "Manifest final:" >&2
+          cat "$OUT_DIR/manifest.json" >&2
 
       - name: Publish/Update Release assets (offline-docs)
         uses: softprops/action-gh-release@v2
