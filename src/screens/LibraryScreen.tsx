@@ -1,12 +1,41 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, Alert, RefreshControl } from "react-native";
+import {
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
+} from "react-native";
 import RNFS from "react-native-fs";
 import NetInfo from "@react-native-community/netinfo";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../../App";
-import { fetchAvailableVersions, fetchOfflineZipUrl } from "../services/djangoDocs";
-import { getDownloadedMap, setDownloadedMap, DownloadedMap, getCachedVersions, setCachedVersions } from "../services/storage";
-import { downloadZip, findIndexHtml, unzipDocs, versionRootDir, ensureDir, docsRoot } from "../services/download";
+
+import {
+  fetchAvailableVersions,
+  fetchOfflineZipUrl,
+  headZipMeta,
+  DjangoVersion,
+} from "../services/djangoDocs";
+
+import {
+  getDownloadedMap,
+  setDownloadedMap,
+  DownloadedMap,
+  getCachedVersions,
+  setCachedVersions,
+} from "../services/storage";
+
+import {
+  downloadZip,
+  findIndexHtml,
+  unzipDocs,
+  versionRootDir,
+  ensureDir,
+  docsRoot,
+} from "../services/download";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Library">;
 
@@ -14,7 +43,7 @@ export default function LibraryScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [versions, setVersions] = useState<{ slug: string; pageUrl: string }[]>([]);
+  const [versions, setVersions] = useState<DjangoVersion[]>([]);
   const [downloaded, setDownloaded] = useState<DownloadedMap>({});
 
   const [busySlug, setBusySlug] = useState<string | null>(null);
@@ -41,8 +70,7 @@ export default function LibraryScreen({ navigation }: Props) {
     if (!online) {
       // Offline + no cache: still show downloaded items if any
       if (Object.keys(dl).length > 0) {
-        // Show a minimal list from downloaded versions so user can open them
-        const fallback = Object.keys(dl).map((slug) => ({
+        const fallback: DjangoVersion[] = Object.keys(dl).map((slug) => ({
           slug,
           pageUrl: `https://docs.djangoproject.com/en/${slug}/`,
         }));
@@ -53,7 +81,7 @@ export default function LibraryScreen({ navigation }: Props) {
       return { hadCache: false, needsInternet: true };
     }
 
-    // Online first run: fetch versions once and cache them
+    // Online first run: fetch versions (from manifest) and cache them
     const v = await fetchAvailableVersions();
     setVersions(v);
     await setCachedVersions(v);
@@ -64,7 +92,7 @@ export default function LibraryScreen({ navigation }: Props) {
     (async () => {
       try {
         const res = await loadOfflineFirst();
-        if (res.needsInternet) {
+        if ((res as any).needsInternet) {
           Alert.alert(
             "First run needs internet",
             "Connect to the internet once to load available Django versions and download docs. After you download a version, it works fully offline."
@@ -84,9 +112,11 @@ export default function LibraryScreen({ navigation }: Props) {
     navigation.navigate("Reader", { versionSlug: slug, indexPath: info.indexPath });
   }
 
-  async function download(slug: string) {
+  async function download(item: DjangoVersion) {
+    const slug = item.slug;
+
     try {
-      // Internet is required for downloads (by definition)
+      // Internet is required for downloads
       const net = await NetInfo.fetch();
       const online = !!net.isConnected && !!net.isInternetReachable;
       if (!online) {
@@ -97,11 +127,20 @@ export default function LibraryScreen({ navigation }: Props) {
       setBusySlug(slug);
       setProgress(0);
 
-      const zipUrl = await fetchOfflineZipUrl(slug);
+      // ✅ Prefer manifest-provided zipUrl (repo-built zips + dev)
+      // Fallback to fetchOfflineZipUrl if missing.
+      const zipUrl = item.zipUrl ?? (await fetchOfflineZipUrl(slug));
+
       if (!zipUrl) {
-        Alert.alert("Not available", `No offline zip found for "${slug}". (Dev may be online-only.)`);
+        Alert.alert("Not available", `No offline zip found for "${slug}".`);
         return;
       }
+
+      // Optional: store cache headers (useful later)
+      let meta: { etag?: string; lastModified?: string } = {};
+      try {
+        meta = await headZipMeta(zipUrl);
+      } catch {}
 
       await ensureDir(docsRoot());
       const root = versionRootDir(slug);
@@ -111,13 +150,23 @@ export default function LibraryScreen({ navigation }: Props) {
       await downloadZip(zipUrl, zipPath, setProgress);
       await unzipDocs(zipPath, root);
 
-      try { await RNFS.unlink(zipPath); } catch {}
+      try {
+        await RNFS.unlink(zipPath);
+      } catch {}
 
       const indexPath = await findIndexHtml(root);
 
       const next: DownloadedMap = {
         ...downloaded,
-        [slug]: { indexPath, downloadedAt: Date.now(), zipUrl },
+        [slug]: {
+          indexPath,
+          downloadedAt: Date.now(),
+          zipUrl,
+          etag: meta.etag,
+          lastModified: meta.lastModified,
+          sha: item.sha,
+          ref: item.ref,
+        },
       };
 
       setDownloaded(next);
@@ -132,9 +181,8 @@ export default function LibraryScreen({ navigation }: Props) {
   }
 
   async function onRefresh() {
-    // IMPORTANT: since you want “internet only on first run”:
-    // we do NOT fetch network versions here.
-    // Refresh just reloads local storage/cached versions.
+    // Still "internet only on first run" for version list:
+    // refresh reloads storage/cached versions only.
     setRefreshing(true);
     try {
       const dl = await getDownloadedMap();
@@ -161,14 +209,12 @@ export default function LibraryScreen({ navigation }: Props) {
     );
   }
 
-  // If no versions and no downloaded docs, show a friendly empty state
   if (data.length === 0 && Object.keys(downloaded).length === 0) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
         <Text style={{ fontSize: 18, fontWeight: "600" }}>No docs yet</Text>
         <Text style={{ marginTop: 10, textAlign: "center", color: "#666" }}>
-          Connect to the internet once to load versions and download a Django docs set.
-          After downloading, everything works offline.
+          Connect to the internet once to load versions and download a Django docs set. After downloading, everything works offline.
         </Text>
       </View>
     );
@@ -186,7 +232,7 @@ export default function LibraryScreen({ navigation }: Props) {
           const isBusy = busySlug === item.slug;
 
           return (
-            <View style={{ padding: 14, backgroundColor: "" }}>
+            <View style={{ padding: 14 }}>
               <Text style={{ fontSize: 18, fontWeight: "600" }}>{item.slug}</Text>
               <Text style={{ color: "#666", marginTop: 4 }}>
                 {isDownloaded ? "Downloaded" : "Not downloaded"}
@@ -204,7 +250,7 @@ export default function LibraryScreen({ navigation }: Props) {
 
                 <TouchableOpacity
                   disabled={!!busySlug}
-                  onPress={() => download(item.slug)}
+                  onPress={() => download(item)}
                   style={{
                     padding: 10,
                     backgroundColor: isBusy ? "#ddd" : "#fff7ed",

@@ -1,7 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import type { DjangoVersion } from "./djangoDocs";
 
-const DOWNLOADED_KEY = "downloaded_versions_v1";
-const VERSIONS_CACHE_KEY = "versions_cache_v1";
+// bumped keys because cached versions now include zipUrl/sha/ref
+const DOWNLOADED_KEY = "downloaded_versions_v2";
+const VERSIONS_CACHE_KEY = "versions_cache_v2";
 
 export type DownloadedMap = Record<
   string,
@@ -11,12 +13,16 @@ export type DownloadedMap = Record<
     zipUrl?: string;
     etag?: string;
     lastModified?: string;
+
+    // optional: store build identity (useful for "Update available")
+    sha?: string;
+    ref?: string;
   }
 >;
 
 export type CachedVersions = {
   savedAt: number;
-  versions: { slug: string; pageUrl: string }[];
+  versions: DjangoVersion[];
 };
 
 export async function getDownloadedMap(): Promise<DownloadedMap> {
@@ -33,7 +39,7 @@ export async function getCachedVersions(): Promise<CachedVersions | null> {
   return raw ? JSON.parse(raw) : null;
 }
 
-export async function setCachedVersions(versions: { slug: string; pageUrl: string }[]) {
+export async function setCachedVersions(versions: DjangoVersion[]) {
   const payload: CachedVersions = { savedAt: Date.now(), versions };
   await AsyncStorage.setItem(VERSIONS_CACHE_KEY, JSON.stringify(payload));
 }
