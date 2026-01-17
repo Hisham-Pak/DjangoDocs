@@ -40,10 +40,10 @@ jobs:
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V)
 
-          # Unique series X.Y, filter >= 1.8
-          SERIES=$(echo "$TAGS" | awk -F. '{print $1"."$2}' | sort -Vu | awk -F. '($1>1)||($1==1&&$2>=8){print $0}')
+          # Unique series X.Y, filter >= 2.2
+          SERIES=$(echo "$TAGS" | awk -F. '{print $1"."$2}' | sort -Vu | awk -F. '($1>2)||($1==2&&$2>=2){print $0}')
 
-          echo "Series to build (>=1.8):" >&2
+          echo "Series to build (>=2.2):" >&2
           echo "$SERIES" >&2
 
           META="$OUT_DIR/meta.txt"
