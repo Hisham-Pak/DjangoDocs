@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build docs zips + manifest.json (clean slugs)
+      - name: Build docs zips + manifest.json
         env:
           OUT_DIR: out
         run: |
