@@ -16,7 +16,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make zip jq
+          sudo apt-get install -y git make zip jq curl
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -37,17 +37,54 @@ jobs:
           TAGS=$(git ls-remote --tags "$REPO_URL" \
             | awk '{print $2}' \
             | sed 's#refs/tags/##' \
+            | sed 's#\^{}##' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V)
 
-          # Unique series X.Y, filter >= 4.2
-          SERIES=$(echo "$TAGS" | awk -F. '{print $1"."$2}' | sort -Vu | awk -F. '($1>4)||($1==4&&$2>=2){print $0}')
+          # Unique series X.Y, filter >= 1.8
+          SERIES=$(echo "$TAGS" \
+            | awk -F. '{print $1"."$2}' \
+            | sort -Vu \
+            | awk -F. '($1>1)||($1==1&&$2>=8){print $0}')
 
-          echo "Series to build (>=4.2):" >&2
+          echo "Series to process (>=1.8):" >&2
           echo "$SERIES" >&2
 
           META="$OUT_DIR/meta.txt"
           : > "$META"
+
+          # Get commit SHA for a tag (works for annotated/lightweight tags)
+          sha_for_tag () {
+            local TAG="$1"
+            local SHA
+            SHA=$(git ls-remote "$REPO_URL" "refs/tags/${TAG}^{}" | awk '{print $1}' || true)
+            if [ -z "${SHA:-}" ]; then
+              SHA=$(git ls-remote "$REPO_URL" "refs/tags/${TAG}" | awk '{print $1}' || true)
+            fi
+            echo "${SHA:-}"
+          }
+
+          # Download official zip for older docs (1.8 <= X.Y < 4.2)
+          download_official_zip () {
+            local SLUG="$1"   # "4.1"
+            local REF="$2"    # latest patch tag e.g. "4.1.13"
+            local URL="https://media.djangoproject.com/docs/django-docs-${SLUG}-en.zip"
+            local ZIP_NAME="django-docs-${SLUG}-en.zip"
+
+            echo "=== Downloading $SLUG from $URL (ref $REF) ===" >&2
+
+            # fail fast if missing
+            curl -fsI "$URL" >/dev/null
+
+            # download
+            curl -fL "$URL" -o "${OUT_DIR}/${ZIP_NAME}"
+
+            local SHA
+            SHA="$(sha_for_tag "$REF")"
+
+            # IMPORTANT: This is the ONLY stdout line from this function
+            printf "%s %s %s\n" "$SLUG" "$REF" "$SHA"
+          }
 
           build_from_ref () {
             local SLUG="$1"  # "5.2" or "dev"
@@ -56,14 +93,11 @@ jobs:
             echo "=== Building $SLUG from $REF ===" >&2
             rm -rf django
 
-            # Clone quietly to reduce noise
             git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" django
 
-            # Install deps (quiet-ish)
             python -m pip install -q -U pip wheel setuptools
             python -m pip install -q -r django/docs/requirements.txt
 
-            # Build HTML; send noisy output to stderr so META stays clean
             (cd django/docs && make html) >&2
 
             ZIP_NAME="django-docs-${SLUG}-en.zip"
@@ -76,15 +110,26 @@ jobs:
             printf "%s %s %s\n" "$SLUG" "$REF" "$SHA"
           }
 
-          # Build stable series (X.Y) using latest patch tag (X.Y.Z)
+          # Process each series:
+          # - For 1.8 <= X.Y < 4.2: download official zip
+          # - For X.Y >= 4.2: build from source
           while read -r S; do
             [ -z "$S" ] && continue
+
             LATEST=$(echo "$TAGS" | grep -E "^${S}\.[0-9]+$" | tail -n 1)
             if [ -z "$LATEST" ]; then
               echo "No tag found for series $S" >&2
               exit 1
             fi
-            build_from_ref "$S" "$LATEST" >> "$META"
+
+            MAJOR="${S%%.*}"
+            MINOR="${S#*.}"
+
+            if [ "$MAJOR" -lt 4 ] || { [ "$MAJOR" -eq 4 ] && [ "$MINOR" -lt 2 ]; }; then
+              download_official_zip "$S" "$LATEST" >> "$META"
+            else
+              build_from_ref "$S" "$LATEST" >> "$META"
+            fi
           done <<< "$SERIES"
 
           # Build dev from latest main
