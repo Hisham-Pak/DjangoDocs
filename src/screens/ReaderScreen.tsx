@@ -28,6 +28,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const [pageTitle, setPageTitle] = useState<string>("");
   const [bookmarked, setBookmarked] = useState(false);
 
+  const [fullscreen, setFullscreen] = useState(false);
+
   const webRef = useRef<WebView>(null);
 
   async function syncBookmarked(url: string) {
@@ -72,7 +74,10 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   function openSearch() {
     if (!searchPath) {
-      Alert.alert("Search not found", "This offline package did not include search.html.");
+      Alert.alert(
+        "Search not found",
+        "This offline package did not include search.html."
+      );
       return;
     }
     const url = toFileUrl(searchPath);
@@ -110,7 +115,10 @@ export default function ReaderScreen({ route, navigation }: Props) {
     navigation.navigate("Bookmarks", { versionSlug, indexPath });
   }
 
-  // Inject viewport meta tag for better mobile experience
+  function toggleFullscreen() {
+    setFullscreen((v) => !v);
+  }
+
   const injectedBefore = `
   (function () {
     try {
@@ -261,9 +269,6 @@ export default function ReaderScreen({ route, navigation }: Props) {
   })();
   `;
 
-
-  // Capture <title> from the loaded page
-  // Also inject some CSS to improve readability on mobile
   const injectedAfter = `
   (function() {
     try {
@@ -334,42 +339,71 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   return (
     <View style={{ flex: 1 }}>
-      <View
-        style={{
-          flexDirection: "row",
-          justifyContent: "space-between",
-          padding: 10,
-          borderBottomWidth: 1,
-          borderBottomColor: "#eee",
-        }}
-      >
-        <View style={{ flexDirection: "row", gap: 10 }}>
-          <TouchableOpacity onPress={openHome} style={{ padding: 8, backgroundColor: "#e8f0fe", borderRadius: 8 }}>
-            <Text>Home</Text>
-          </TouchableOpacity>
+      {!fullscreen && (
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            padding: 10,
+            borderBottomWidth: 1,
+            borderBottomColor: "#eee",
+          }}
+        >
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <TouchableOpacity
+              onPress={openHome}
+              style={{ padding: 8, backgroundColor: "#e8f0fe", borderRadius: 8 }}
+            >
+              <Text>Home</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity onPress={openSearch} style={{ padding: 8, backgroundColor: "#fff7ed", borderRadius: 8 }}>
-            <Text>Search</Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              onPress={openSearch}
+              style={{ padding: 8, backgroundColor: "#fff7ed", borderRadius: 8 }}
+            >
+              <Text>Search</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <TouchableOpacity
+              onPress={openBookmarks}
+              style={{ padding: 8, backgroundColor: "#eef2ff", borderRadius: 8 }}
+            >
+              <Text>Bookmarks</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={toggleBookmark}
+              style={{
+                padding: 8,
+                backgroundColor: bookmarked ? "#d1fae5" : "#f3f4f6",
+                borderRadius: 8,
+              }}
+            >
+              <Text>{bookmarked ? "Bookmarked ✓" : "Bookmark +"}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={toggleFullscreen}
+              style={{ padding: 8, backgroundColor: "#fef3c7", borderRadius: 8 }}
+            >
+              <Text>Hide</Text>
+            </TouchableOpacity>
+          </View>
         </View>
+      )}
 
-        <View style={{ flexDirection: "row", gap: 10 }}>
-          <TouchableOpacity onPress={openBookmarks} style={{ padding: 8, backgroundColor: "#eef2ff", borderRadius: 8 }}>
-            <Text>Bookmarks</Text>
-          </TouchableOpacity>
-
+      {fullscreen && (
+        <View style={{ position: "absolute", top: 10, right: 10, zIndex: 999 }}>
           <TouchableOpacity
-            onPress={toggleBookmark}
-            style={{
-              padding: 8,
-              backgroundColor: bookmarked ? "#d1fae5" : "#f3f4f6",
-              borderRadius: 8,
-            }}
+            onPress={toggleFullscreen}
+            style={{ padding: 8, backgroundColor: "#fef3c7", borderRadius: 8 }}
           >
-            <Text>{bookmarked ? "Bookmarked ✓" : "Bookmark +"}</Text>
+            <Text>Show</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      )}
 
       <WebView
         ref={webRef}

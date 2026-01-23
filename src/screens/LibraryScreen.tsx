@@ -129,7 +129,7 @@ export default function LibraryScreen({ navigation }: Props) {
       setBusySlug(slug);
       setProgress(0);
 
-      // ✅ Prefer manifest-provided zipUrl (repo-built zips + dev)
+      // Prefer manifest-provided zipUrl (repo-built zips + dev)
       // Fallback to fetchOfflineZipUrl if missing.
       const zipUrl = item.zipUrl ?? (await fetchOfflineZipUrl(slug));
 
