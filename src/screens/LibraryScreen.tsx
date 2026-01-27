@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -41,6 +41,26 @@ import { maybeShowInterstitial } from "../services/interstitial";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Library">;
 
+const MANIFEST_SYNC_MIN_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+
+function isOnline(net: { isConnected?: boolean | null; isInternetReachable?: boolean | null }) {
+  // Some Android devices report isInternetReachable as null initially.
+  // Treat "not explicitly false" as OK when connected.
+  return !!net.isConnected && net.isInternetReachable !== false;
+}
+
+function stableKey(v: DjangoVersion) {
+  return `${v.slug}|${v.pageUrl ?? ""}|${v.zipUrl ?? ""}|${v.sha ?? ""}|${v.ref ?? ""}`;
+}
+
+function sameVersions(a: DjangoVersion[], b: DjangoVersion[]) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (stableKey(a[i]) !== stableKey(b[i])) return false;
+  }
+  return true;
+}
+
 export default function LibraryScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -52,6 +72,33 @@ export default function LibraryScreen({ navigation }: Props) {
   const [progress, setProgress] = useState<number>(0);
 
   const data = useMemo(() => versions, [versions]);
+
+  // keep background sync from overlapping + throttle it
+  const syncingRef = useRef(false);
+  const lastSyncAtRef = useRef(0);
+
+  async function syncManifestIfNeeded() {
+    const now = Date.now();
+    if (now - lastSyncAtRef.current < MANIFEST_SYNC_MIN_INTERVAL_MS) return;
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+
+    try {
+      const v = await fetchAvailableVersions(); // manifest-first in your service
+      const cached = await getCachedVersions();
+
+      if (!cached || !sameVersions(cached.versions, v)) {
+        setVersions(v);
+        await setCachedVersions(v);
+      }
+
+      lastSyncAtRef.current = now;
+    } catch {
+      // ignore; keep cached list
+    } finally {
+      syncingRef.current = false;
+    }
+  }
 
   async function loadOfflineFirst() {
     // Always load downloaded docs map (works offline)
@@ -67,7 +114,7 @@ export default function LibraryScreen({ navigation }: Props) {
 
     // No cache yet: only then try network (first-run requirement)
     const net = await NetInfo.fetch();
-    const online = !!net.isConnected && !!net.isInternetReachable;
+    const online = isOnline(net);
 
     if (!online) {
       // Offline + no cache: still show downloaded items if any
@@ -91,9 +138,25 @@ export default function LibraryScreen({ navigation }: Props) {
   }
 
   useEffect(() => {
+    let unsub: null | (() => void) = null;
+
     (async () => {
       try {
         const res = await loadOfflineFirst();
+
+        // auto-update manifest whenever we have internet (no pull-to-refresh required)
+        unsub = NetInfo.addEventListener((net) => {
+          if (isOnline(net)) {
+            syncManifestIfNeeded(); // fire-and-forget
+          }
+        });
+
+        // also try once on launch if already online
+        const net = await NetInfo.fetch();
+        if (isOnline(net)) {
+          syncManifestIfNeeded();
+        }
+
         if ((res as any).needsInternet) {
           Alert.alert(
             "First run needs internet",
@@ -106,6 +169,11 @@ export default function LibraryScreen({ navigation }: Props) {
         setLoading(false);
       }
     })();
+
+    return () => {
+      if (unsub) unsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function open(slug: string) {
@@ -120,7 +188,7 @@ export default function LibraryScreen({ navigation }: Props) {
     try {
       // Internet is required for downloads
       const net = await NetInfo.fetch();
-      const online = !!net.isConnected && !!net.isInternetReachable;
+      const online = isOnline(net);
       if (!online) {
         Alert.alert("Offline", "You’re offline. Connect to the internet to download this version.");
         return;
@@ -183,8 +251,6 @@ export default function LibraryScreen({ navigation }: Props) {
   }
 
   async function onRefresh() {
-    // Still "internet only on first run" for version list:
-    // refresh reloads storage/cached versions only.
     setRefreshing(true);
     try {
       const dl = await getDownloadedMap();
@@ -194,7 +260,6 @@ export default function LibraryScreen({ navigation }: Props) {
       if (cached?.versions?.length) {
         setVersions(cached.versions);
       } else {
-        // If cache was wiped, refresh behaves like first run:
         await loadOfflineFirst();
       }
     } finally {
